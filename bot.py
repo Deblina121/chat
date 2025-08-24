@@ -1,9 +1,25 @@
 import google.generativeai as genai
 import streamlit as st
+import sqlite3
+from datetime import datetime
 
 # ---------------- Configure Gemini ----------------
 genai.configure(api_key="AIzaSyB7986dsKfXWd5vLDH-XH2kepuh3AwhiQM")   # ⚠️ Replace with your API Key
 model = genai.GenerativeModel("gemini-1.5-flash")
+
+# ---------------- Database Setup ----------------
+conn = sqlite3.connect("chat_history.db", check_same_thread=False)
+c = conn.cursor()
+
+c.execute("""
+    CREATE TABLE IF NOT EXISTS chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        sender TEXT,
+        message TEXT
+    )
+""")
+conn.commit()
 
 # ---------------- Streamlit Page ----------------
 st.set_page_config(page_title="⚡ Gemini AI Chatbot", page_icon="🤖", layout="centered")
@@ -56,16 +72,14 @@ st.markdown(
 
 st.markdown("<div class='title'>⚡ Gemini AI Powered Chatbot ⚡</div>", unsafe_allow_html=True)
 
-# ---------------- Chat History ----------------
-if "history" not in st.session_state:
-    st.session_state.history = []
-
 # ---------------- Chat Input ----------------
 user_input = st.chat_input("💬 Type your message...")
 
 if user_input:
     # Save user message
-    st.session_state.history.append(("You", user_input))
+    c.execute("INSERT INTO chats (timestamp, sender, message) VALUES (?, ?, ?)",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "You", user_input))
+    conn.commit()
 
     # Gemini response
     try:
@@ -75,24 +89,34 @@ if user_input:
         bot_reply = f"⚠️ Error: {str(e)}"
 
     # Save bot reply
-    st.session_state.history.append(("Gemini ⚡", bot_reply))
+    c.execute("INSERT INTO chats (timestamp, sender, message) VALUES (?, ?, ?)",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Gemini ⚡", bot_reply))
+    conn.commit()
 
-# ---------------- Display Chat with Delete Option ----------------
+# ---------------- Display Chat ----------------
 st.markdown("<div class='chat-box'>", unsafe_allow_html=True)
 
-# Iterate in reverse order so delete works safely
-for i in range(len(st.session_state.history) - 1, -1, -1):
-    sender, msg = st.session_state.history[i]
-    cols = st.columns([10, 1])
+# Load history from DB
+c.execute("SELECT id, sender, message FROM chats ORDER BY id ASC")
+rows = c.fetchall()
+
+for msg_id, sender, msg in rows:
+    bubble_class = "user-bubble" if sender == "You" else "bot-bubble"
+
+    cols = st.columns([12, 1])  # message + delete button
 
     with cols[0]:
-        if sender == "You":
-            st.markdown(f"<div class='user-bubble'><b>{sender}:</b> {msg}</div>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div class='bot-bubble'><b>{sender}:</b> {msg}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='{bubble_class}'><b>{sender}:</b> {msg}</div>",
+            unsafe_allow_html=True
+        )
 
     with cols[1]:
-        if st.button("❌", key=f"del_{i}"):
-            st.session_state.history.pop(i)
-            st.rerun()
+        if msg != "🗑 This message was deleted":  # show delete only if not already deleted
+            if st.button("🗑", key=f"del_{msg_id}"):
+                c.execute("UPDATE chats SET message=? WHERE id=?",
+                          ("🗑 This message was deleted", msg_id))
+                conn.commit()
+                st.rerun()
 
+st.markdown("</div>", unsafe_allow_html=True)
