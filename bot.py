@@ -2,6 +2,7 @@ import google.generativeai as genai
 import streamlit as st
 import sqlite3
 from datetime import datetime
+import pandas as pd
 
 # ---------------- Configure Gemini ----------------
 genai.configure(api_key="AIzaSyB7986dsKfXWd5vLDH-XH2kepuh3AwhiQM")   # ⚠️ Replace with your API Key
@@ -11,15 +12,31 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 conn = sqlite3.connect("chat_history.db", check_same_thread=False)
 c = conn.cursor()
 
-c.execute("""
-    CREATE TABLE IF NOT EXISTS chats (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT,
-        sender TEXT,
-        message TEXT
-    )
-""")
+c.execute('''
+CREATE TABLE IF NOT EXISTS chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT,
+    user_id TEXT,
+    sender TEXT,
+    message TEXT
+)
+''')
 conn.commit()
+
+# ---------------- User / Admin Login ----------------
+st.sidebar.title("🔐 Login")
+
+user_type = st.sidebar.radio("Login as:", ["User", "Admin"])
+
+if user_type == "Admin":
+    admin_pass = st.sidebar.text_input("Enter Admin Password", type="password")
+
+    if admin_pass != st.secrets["ADMIN_PASSWORD"]:  # ⚠️ Change this password in secrets.toml
+        st.error("Invalid password!")
+        st.stop()
+    else:
+        st.success("✅ Logged in as Admin")
+
 
 # ---------------- Streamlit Page ----------------
 st.set_page_config(page_title="⚡ Gemini AI Chatbot", page_icon="🤖", layout="centered")
@@ -72,13 +89,22 @@ st.markdown(
 
 st.markdown("<div class='title'>⚡ Gemini AI Powered Chatbot ⚡</div>", unsafe_allow_html=True)
 
+# ---------------- User ID ----------------
+if user_type == "User":
+    user_id = st.sidebar.text_input("Enter your Name/ID:", key="user_id")
+    if not user_id:
+        st.warning("⚠️ Please enter your Name/ID to start chatting")
+        st.stop()
+else:
+    user_id = "ADMIN"
+
 # ---------------- Chat Input ----------------
 user_input = st.chat_input("💬 Type your message...")
 
-if user_input:
+if user_input and user_type == "User":
     # Save user message
-    c.execute("INSERT INTO chats (timestamp, sender, message) VALUES (?, ?, ?)",
-              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "You", user_input))
+    c.execute("INSERT INTO chats (timestamp, user_id, sender, message) VALUES (?, ?, ?, ?)",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id, "You", user_input))
     conn.commit()
 
     # Gemini response
@@ -89,34 +115,49 @@ if user_input:
         bot_reply = f"⚠️ Error: {str(e)}"
 
     # Save bot reply
-    c.execute("INSERT INTO chats (timestamp, sender, message) VALUES (?, ?, ?)",
-              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Gemini ⚡", bot_reply))
+    c.execute("INSERT INTO chats (timestamp, user_id, sender, message) VALUES (?, ?, ?, ?)",
+              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id, "Gemini ⚡", bot_reply))
     conn.commit()
 
 # ---------------- Display Chat ----------------
 st.markdown("<div class='chat-box'>", unsafe_allow_html=True)
 
-# Load history from DB
-c.execute("SELECT id, sender, message FROM chats ORDER BY id ASC")
+if user_type == "User":
+    c.execute("SELECT id, sender, message FROM chats WHERE user_id=? ORDER BY id ASC", (user_id,))
+else:  # Admin sees ALL chats
+    c.execute("SELECT id, user_id, sender, message FROM chats ORDER BY id ASC")
+
 rows = c.fetchall()
 
-for msg_id, sender, msg in rows:
-    bubble_class = "user-bubble" if sender == "You" else "bot-bubble"
+for row in rows:
+    if user_type == "User":
+        msg_id, sender, msg = row
+        label = sender
+    else:
+        msg_id, uid, sender, msg = row
+        label = f"{uid} | {sender}"
+
+    bubble_class = "user-bubble" if "You" in sender else "bot-bubble"
 
     cols = st.columns([12, 1])  # message + delete button
 
     with cols[0]:
         st.markdown(
-            f"<div class='{bubble_class}'><b>{sender}:</b> {msg}</div>",
+            f"<div class='{bubble_class}'><b>{label}:</b> {msg}</div>",
             unsafe_allow_html=True
         )
 
     with cols[1]:
-        if msg != "🗑 This message was deleted":  # show delete only if not already deleted
+        if msg != "🗑 This message was deleted":
             if st.button("🗑", key=f"del_{msg_id}"):
-                c.execute("UPDATE chats SET message=? WHERE id=?",
-                          ("🗑 This message was deleted", msg_id))
+                c.execute("UPDATE chats SET message=? WHERE id=?", ("🗑 This message was deleted", msg_id))
                 conn.commit()
                 st.rerun()
 
 st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------------- History Section ----------------
+if user_type == "Admin":
+    st.subheader("📜 Full Chat History (All Users)")
+    df = pd.read_sql_query("SELECT * FROM chats ORDER BY id DESC", conn)
+    st.dataframe(df)
